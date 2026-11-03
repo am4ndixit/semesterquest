@@ -1,5 +1,5 @@
 from __future__ import annotations
-import os, re, json, secrets, smtplib, time, copy
+import os, re, json, secrets, smtplib, time, copy, urllib.parse
 from datetime import datetime, timedelta, timezone
 from email.message import EmailMessage
 from pathlib import Path
@@ -8,7 +8,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from sqlalchemy import select, func, desc
@@ -17,7 +17,9 @@ from sqlalchemy.orm.attributes import flag_modified
 
 from . import models as m, content, rag, llm, engines, vshell
 from .config import (DATA_DIR, UPLOAD_DIR, MAX_UPLOAD_MB, SMTP_HOST, SMTP_PORT,
-                     SMTP_USER, SMTP_PASS, SMTP_FROM, DEV_SHOW_CODE, OTP_MINUTES)
+                     SMTP_USER, SMTP_PASS, SMTP_FROM, DEV_SHOW_CODE, OTP_MINUTES,
+                     RESEND_API_KEY, EMAIL_FROM,
+                     GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET, GOOGLE_REDIRECT_URI)
 from .db import Base, engine, get_db, SessionLocal
 from .security import (current_user, valid_email, hash_pw, check_pw, hash_code,
                        check_code, new_code, make_token)
@@ -163,19 +165,59 @@ def earned_badges(db: Session, user: m.User) -> list[dict]:
     return [{"id":i,"title":t,"description":d,"earned":e,"icon":ic} for i,t,d,e,ic in badges]
 
 
-def send_login_code(email: str, code: str) -> bool:
+def _send_via_resend(email: str, subject: str, html: str) -> bool:
+    """Send email using Resend.com HTTP API (free tier: 100/day, 3000/month)."""
+    if not RESEND_API_KEY:
+        return False
+    import httpx
+    try:
+        r = httpx.post(
+            "https://api.resend.com/emails",
+            headers={"Authorization": f"Bearer {RESEND_API_KEY}", "Content-Type": "application/json"},
+            json={"from": EMAIL_FROM, "to": [email], "subject": subject, "html": html},
+            timeout=15,
+        )
+        return r.status_code in (200, 201)
+    except Exception:
+        return False
+
+
+def _send_via_smtp(email: str, subject: str, text: str) -> bool:
+    """Fallback: send email via SMTP (legacy)."""
     if not SMTP_HOST:
         return False
-    msg=EmailMessage()
-    msg["Subject"]="Your Semester Quest sign-in code"
-    msg["From"]=SMTP_FROM
-    msg["To"]=email
-    msg.set_content(f"Your Semester Quest verification code is {code}. It expires in {OTP_MINUTES} minutes. If you did not request it, ignore this email.")
-    with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=15) as server:
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = SMTP_FROM
+    msg["To"] = email
+    msg.set_content(text)
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15) as server:
         server.starttls()
-        if SMTP_USER: server.login(SMTP_USER,SMTP_PASS)
+        if SMTP_USER:
+            server.login(SMTP_USER, SMTP_PASS)
         server.send_message(msg)
     return True
+
+
+def send_login_code(email: str, code: str) -> bool:
+    """Try Resend first, fall back to SMTP."""
+    subject = "Your Semester Quest sign-in code"
+    html = f"""
+    <div style="font-family:sans-serif;max-width:480px;margin:auto;padding:32px;background:#0a0a0a;color:#e2e8f0;border-radius:12px;">
+      <div style="text-align:center;margin-bottom:24px;">
+        <div style="display:inline-block;background:#00e5ff;color:#000;font-weight:800;font-size:22px;border-radius:8px;padding:8px 18px;letter-spacing:2px;">SQ</div>
+      </div>
+      <h2 style="color:#00e5ff;margin:0 0 8px">Your sign-in code</h2>
+      <p style="color:#94a3b8;margin:0 0 24px">Use this 6-digit code to complete your Semester Quest login. It expires in <strong style="color:#e2e8f0">{OTP_MINUTES} minutes</strong>.</p>
+      <div style="text-align:center;background:#111;border:2px solid #00e5ff;border-radius:12px;padding:28px;">
+        <span style="font-size:42px;font-weight:900;letter-spacing:12px;color:#00e5ff;font-family:monospace">{code}</span>
+      </div>
+      <p style="color:#475569;font-size:13px;margin-top:24px">If you didn't request this, you can safely ignore it. Your account remains secure.</p>
+    </div>
+    """
+    text = f"Your Semester Quest verification code is {code}. It expires in {OTP_MINUTES} minutes."
+    # Try Resend → SMTP → give up
+    return _send_via_resend(email, subject, html) or _send_via_smtp(email, subject, text)
 
 
 # ----------------------------- health/auth -------------------------------
@@ -186,8 +228,21 @@ def health():
 @app.get("/api/meta")
 def meta():
     return {"email_domain":"adypu.edu.in","otp_required":True,"theme_modes":["light","dark"],
-            "llm_engine":llm.engine_name(),"python_sandbox":engines.isolation_level(),
-            "upload_max_mb":MAX_UPLOAD_MB}
+            "llm_engine":llm.engine_name(),"llm_available":llm.available(),
+            "python_sandbox":engines.isolation_level(),
+            "upload_max_mb":MAX_UPLOAD_MB,
+            "integrations":{
+                "email": bool(RESEND_API_KEY or SMTP_HOST),
+                "google_oauth": bool(GOOGLE_CLIENT_ID),
+                "groq": bool(__import__('os').getenv("GROQ_API_KEY","")),
+                "gemini": bool(__import__('os').getenv("GEMINI_API_KEY","")),
+            }}
+
+@app.get("/api/ai/quote")
+def ai_quote(user: m.User=Depends(current_user)):
+    """Get a motivational quote from Byte (powered by Groq/Gemini if configured)."""
+    return {"quote": llm.motivational_quote(user.name.split()[0] if user.name else "explorer"),
+            "engine": llm.engine_name()}
 
 @app.post("/api/auth/start")
 def auth_start(body: AuthStart, db: Session=Depends(get_db)):
@@ -205,10 +260,15 @@ def auth_start(body: AuthStart, db: Session=Depends(get_db)):
     db.add(m.LoginCode(email=email,code_hash=hash_code(code),expires_at=utcnow()+timedelta(minutes=OTP_MINUTES)))
     db.commit()
     delivered=False
-    if SMTP_HOST:
-        try: delivered=send_login_code(email,code)
-        except Exception as exc: raise HTTPException(503,"Could not send the verification email. Check SMTP settings and retry.") from exc
-    result={"message":"Verification code sent to your ADYPU inbox." if delivered else "Email delivery is not configured. Use the development code shown below.","email":email,"delivery":"email" if delivered else "development"}
+    try:
+        delivered = send_login_code(email, code)
+    except Exception as exc:
+        raise HTTPException(503, "Could not send the verification email. Check your email settings and retry.") from exc
+    result={
+        "message": "Verification code sent to your ADYPU inbox." if delivered else "Email delivery is not configured. Use the development code shown below.",
+        "email": email,
+        "delivery": "email" if delivered else "development",
+    }
     if not delivered and DEV_SHOW_CODE: result["dev_code"]=code
     return result
 
@@ -239,6 +299,78 @@ def set_theme(body: ThemeIn, user: m.User=Depends(current_user), db: Session=Dep
 @app.post("/api/auth/logout")
 def logout(user: m.User=Depends(current_user)):
     return {"ok":True,"message":"Signed out on this device. Remove the local token to finish."}
+
+
+# ── Google OAuth ──────────────────────────────────────────────────────────────
+@app.get("/api/auth/google")
+def google_login():
+    """Redirect the browser to Google's OAuth consent screen."""
+    if not GOOGLE_CLIENT_ID:
+        raise HTTPException(501, "Google OAuth is not configured. Add GOOGLE_CLIENT_ID to .env")
+    params = {
+        "client_id": GOOGLE_CLIENT_ID,
+        "redirect_uri": GOOGLE_REDIRECT_URI,
+        "response_type": "code",
+        "scope": "openid email profile",
+        "access_type": "offline",
+        "prompt": "select_account",
+    }
+    url = "https://accounts.google.com/o/oauth2/v2/auth?" + urllib.parse.urlencode(params)
+    return RedirectResponse(url)
+
+
+@app.get("/api/auth/google/callback")
+def google_callback(code: str | None = None, error: str | None = None, db: Session = Depends(get_db)):
+    """Exchange Google's auth code for a user token."""
+    if error or not code:
+        # Redirect to frontend with an error flag
+        return RedirectResponse("/?auth_error=" + urllib.parse.quote(error or "cancelled"))
+    if not GOOGLE_CLIENT_ID or not GOOGLE_CLIENT_SECRET:
+        raise HTTPException(501, "Google OAuth is not fully configured.")
+    import httpx
+    # Exchange code for tokens
+    token_resp = httpx.post(
+        "https://oauth2.googleapis.com/token",
+        data={
+            "code": code,
+            "client_id": GOOGLE_CLIENT_ID,
+            "client_secret": GOOGLE_CLIENT_SECRET,
+            "redirect_uri": GOOGLE_REDIRECT_URI,
+            "grant_type": "authorization_code",
+        },
+        timeout=15,
+    )
+    if token_resp.status_code != 200:
+        return RedirectResponse("/?auth_error=token_exchange_failed")
+    tokens = token_resp.json()
+    # Get user info from Google
+    info_resp = httpx.get(
+        "https://www.googleapis.com/oauth2/v3/userinfo",
+        headers={"Authorization": f"Bearer {tokens['access_token']}"},
+        timeout=15,
+    )
+    if info_resp.status_code != 200:
+        return RedirectResponse("/?auth_error=userinfo_failed")
+    info = info_resp.json()
+    email: str = info.get("email", "").lower().strip()
+    name: str = info.get("name", email.split("@")[0].upper())
+    if not email:
+        return RedirectResponse("/?auth_error=no_email")
+    # Allow any Google account (remove domain restriction for OAuth)
+    user = db.scalar(select(m.User).where(m.User.email == email))
+    if not user:
+        user = m.User(
+            email=email,
+            password_hash=hash_pw(secrets.token_hex(32)),  # unusable password
+            name=name,
+            settings={"google_auth": True},
+        )
+        db.add(user)
+        db.flush()
+    db.commit()
+    token = make_token(user.id)
+    # Redirect to frontend with the token in the URL fragment (handled by JS)
+    return RedirectResponse(f"/?sq_token={token}")
 
 
 # ----------------------------- dashboard/worlds ---------------------------
@@ -447,7 +579,7 @@ def tutor(body: TutorIn, user: m.User=Depends(current_user), db: Session=Depends
         reply=("I found a few relevant passages in your uploaded class material:\n\n"+excerpts+
                "\n\nTry reading the cited section once, then ask me to break down a specific line or example. The built-in tutor is extractive right now; configure an OpenAI-compatible model in `.env` for generated explanations.")
         return {"reply":reply,"cites":citations,"engine":llm.engine_name(),"grounded":True}
-    return {"reply":"I couldn't find a matching passage in your uploads yet. Upload the relevant lecture PDF, slides or notes and ask again. I can still help with a general explanation, but I won't label it as coming from your faculty material.\n\nFor generated explanations, configure an OpenAI-compatible model such as Ollama or another compatible endpoint in `.env`.","cites":[],"engine":llm.engine_name(),"grounded":False}
+    return {"reply":"I couldn't find a matching passage in your uploads yet. Upload the relevant lecture PDF, slides or notes and ask again. I can still help with a general explanation, but I won't label it as coming from your faculty material.\n\nFor AI-generated explanations, add a free GROQ_API_KEY or GEMINI_API_KEY to your .env file — no credit card needed!","cites":[],"engine":llm.engine_name(),"grounded":False}
 
 
 # ----------------------------- flashcards (SM-2) ----------------------------

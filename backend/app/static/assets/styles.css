@@ -1278,3 +1278,80 @@ body[data-theme="dark"] .progress-fill {
 body[data-theme="dark"] .nav-item.active {
   box-shadow: 0 0 12px color-mix(in srgb, var(--blue) 20%, transparent);
 }
+
+/* ── Google OAuth button ──────────────────────────────────────────────── */
+.google-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  color: #1f2937;
+  border: 2px solid #e5e7eb;
+  font-weight: 600;
+  font-size: 14px;
+  text-decoration: none;
+  gap: 4px;
+  transition: box-shadow 0.2s, border-color 0.2s, background 0.2s;
+}
+.google-btn:hover {
+  background: #f9fafb;
+  border-color: #4285f4;
+  box-shadow: 0 2px 8px rgba(66,133,244,0.18);
+  color: #1f2937;
+  text-decoration: none;
+}
+body[data-theme="dark"] .google-btn {
+  background: #1a1a1a;
+  color: #e2e8f0;
+  border-color: #333;
+}
+body[data-theme="dark"] .google-btn:hover {
+  background: #222;
+  border-color: #4285f4;
+  box-shadow: 0 2px 12px rgba(66,133,244,0.25);
+}
+
+/* ── Auth divider ("or") ──────────────────────────────────────────────── */
+.auth-divider {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0;
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+.auth-divider::before,
+.auth-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border);
+}
+
+/* ── Groq / AI engine badge ───────────────────────────────────────────── */
+.engine-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  padding: 3px 10px;
+  border-radius: 20px;
+  background: linear-gradient(90deg, #f55036 0%, #f97316 100%);
+  color: #fff;
+  text-transform: uppercase;
+}
+.engine-badge.gemini {
+  background: linear-gradient(90deg, #4285f4 0%, #0f9d58 100%);
+}
+.engine-badge.local {
+  background: linear-gradient(90deg, #6366f1 0%, #8b5cf6 100%);
+}
+.engine-badge.none {
+  background: #334155;
+  color: #94a3b8;
+}
