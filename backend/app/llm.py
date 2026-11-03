@@ -18,22 +18,21 @@ from .config import (
 )
 
 # ── Groq ──────────────────────────────────────────────────────────────────────
-# Free tier: ~14,400 requests/day on llama3-8b-8192 (as of 2024)
-# Docs: https://console.groq.com  — get key in 30 sec, no credit card needed
+# Free tier: generous daily limits on qwen, llama, allam models
+# Docs: https://console.groq.com
 _GROQ_BASE = "https://api.groq.com/openai/v1"
 
 # ── Gemini ────────────────────────────────────────────────────────────────────
-# Free tier: 15 RPM / 1M TPM on gemini-1.5-flash (Google AI Studio)
-# Docs: https://aistudio.google.com/app/apikey
-_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta/openai"
+# Free tier: 15 RPM on gemini-2.5-flash (Google AI Studio key — starts with AQ.)
+# Uses native REST API, NOT the OpenAI-compat endpoint
+_GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
 
-# Available models on Groq free tier (as of Nov 2024)
+# Best available Groq free models (Nov 2024)
 GROQ_FREE_MODELS = [
-    "llama3-8b-8192",       # fastest, great for tutoring
-    "llama3-70b-8192",      # smarter but slower
-    "mixtral-8x7b-32768",   # long context (32k)
-    "gemma2-9b-it",         # Google's Gemma 2
-    "llama-3.1-8b-instant", # latest llama 3.1
+    "qwen/qwen3.8-27b",      # best free: smart + fast
+    "openai/gpt-oss-20b",    # strong reasoning
+    "allam-2-7b",            # Arabic + English
+    "whisper-large-v3",      # audio (transcription only)
 ]
 
 
@@ -45,7 +44,7 @@ def _openai_chat(
     temperature: float,
     max_tokens: int,
 ) -> str | None:
-    """Generic OpenAI-compatible chat completion call."""
+    """Generic OpenAI-compatible chat completion call (works for Groq)."""
     try:
         r = httpx.post(
             base_url.rstrip("/") + "/chat/completions",
@@ -55,6 +54,54 @@ def _openai_chat(
         )
         r.raise_for_status()
         return r.json()["choices"][0]["message"]["content"]
+    except Exception:
+        return None
+
+
+def _gemini_chat(
+    api_key: str,
+    model: str,
+    messages: list[dict],
+    temperature: float,
+    max_tokens: int,
+) -> str | None:
+    """
+    Native Gemini REST API call.
+    Works with AI Studio keys (AQ.xxx prefix) — NOT the OpenAI-compat endpoint.
+    """
+    try:
+        # Convert OpenAI message format → Gemini format
+        contents = []
+        system_instruction = None
+        for msg in messages:
+            role = msg.get("role", "user")
+            text = msg.get("content", "")
+            if role == "system":
+                system_instruction = text  # Gemini handles system separately
+            elif role == "assistant":
+                contents.append({"role": "model", "parts": [{"text": text}]})
+            else:
+                contents.append({"role": "user", "parts": [{"text": text}]})
+
+        body: dict = {
+            "contents": contents,
+            "generationConfig": {"temperature": temperature, "maxOutputTokens": max_tokens},
+        }
+        if system_instruction:
+            body["system_instruction"] = {"parts": [{"text": system_instruction}]}
+
+        # Strip "models/" prefix if present
+        model_id = model.replace("models/", "")
+        r = httpx.post(
+            f"{_GEMINI_BASE}/models/{model_id}:generateContent?key={api_key}",
+            json=body,
+            timeout=45,
+        )
+        r.raise_for_status()
+        candidates = r.json().get("candidates", [])
+        if candidates:
+            return candidates[0]["content"]["parts"][0]["text"]
+        return None
     except Exception:
         return None
 
@@ -89,13 +136,22 @@ def engine_name() -> str:
 def chat(messages: list[dict], temperature: float = 0.4, max_tokens: int = 900) -> str | None:
     """
     Send a chat completion request to the first available provider.
+    Priority: Groq → Gemini → Custom LLM
     Returns None if no provider is configured or all calls fail.
     """
-    p = _active_provider()
-    if not p:
-        return None
-    base, key, model = p
-    return _openai_chat(base, key, model, messages, temperature, max_tokens)
+    if GROQ_API_KEY:
+        result = _openai_chat(_GROQ_BASE, GROQ_API_KEY, GROQ_MODEL, messages, temperature, max_tokens)
+        if result:
+            return result
+    if GEMINI_API_KEY:
+        result = _gemini_chat(GEMINI_API_KEY, GEMINI_MODEL, messages, temperature, max_tokens)
+        if result:
+            return result
+    if LLM_BASE_URL and LLM_MODEL:
+        result = _openai_chat(LLM_BASE_URL, LLM_API_KEY, LLM_MODEL, messages, temperature, max_tokens)
+        if result:
+            return result
+    return None
 
 
 def quick_explain(topic: str, context: str = "") -> str | None:

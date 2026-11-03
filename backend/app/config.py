@@ -34,11 +34,11 @@ GOOGLE_REDIRECT_URI = os.getenv(
 
 # Gemini AI (free via Google AI Studio)
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")  # latest free model (Nov 2024)
 
 # Groq (free tier — ultra-fast inference: llama3, mixtral, gemma)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
-GROQ_MODEL = os.getenv("GROQ_MODEL", "llama3-8b-8192")  # free, fast, good
+GROQ_MODEL = os.getenv("GROQ_MODEL", "qwen/qwen3.8-27b")  # best available free model (Nov 2024)
 
 MAX_UPLOAD_MB = int(os.getenv("SQ_MAX_UPLOAD_MB", "20"))
 # Custom OpenAI-compatible LLM (Ollama / LM Studio / vLLM — lowest priority)
