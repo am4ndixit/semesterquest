@@ -1,0 +1,23 @@
+SEMESTER QUEST — QUICK START (macOS)
+
+1. Extract Semester-Quest-Repo.zip.
+2. Open the extracted `semester-quest` folder in Finder.
+3. Double-click `run.command`.
+   - First launch creates a Python virtual environment and installs dependencies.
+   - macOS may ask you to confirm opening a downloaded script. If so, right-click
+     run.command, choose Open, then confirm.
+4. Open http://127.0.0.1:8000 in your browser.
+5. Sign up with your @adypu.edu.in email. In local development, the one-time
+   verification code is shown by the app. This is a development-only shortcut.
+
+To stop the server, focus the Terminal window running it and press Ctrl+C.
+
+Alternative Terminal commands from inside the project folder:
+  ./setup.sh     # first launch only
+  ./run.sh       # start the app
+
+Python Lab note: secure code execution requires Docker Desktop to be installed
+and running, followed by:
+  docker pull python:3.13-alpine
+Without Docker, the Python Lab stays disabled rather than running untrusted code
+on your computer. The virtual Terminal Lab works without Docker.
